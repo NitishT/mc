@@ -25,6 +25,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fatih/color"
@@ -504,9 +505,18 @@ func (mj *mirrorJob) watchMirrorEvents(ctx context.Context, events []EventInfo) 
 
 // this goroutine will watch for notifications, and add modified objects to the queue
 func (mj *mirrorJob) watchMirror(ctx context.Context, stopParallel func()) {
+	var eventsReceived int32
+	go func() {
+		for {
+			time.Sleep(time.Second)
+			fmt.Println("Events received per second", atomic.LoadInt32(&eventsReceived))
+			atomic.StoreInt32(&eventsReceived, 0)
+		}
+	}()
 	for {
 		select {
 		case events, ok := <-mj.watcher.Events():
+			atomic.AddInt32(&eventsReceived, int32(len(events)))
 			if !ok {
 				stopParallel()
 				return

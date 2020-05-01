@@ -96,6 +96,12 @@ func Main(args []string) {
 	probe.SetAppInfo("Release-Tag", ReleaseTag)
 	probe.SetAppInfo("Commit", ShortCommitID)
 
+	cpus := runtime.NumCPU()
+
+	fmt.Println("Number of CPUs available ", cpus)
+	fmt.Printf("CPUs = %s for MinIO Process\n", os.Getenv("GOMAXPROCS"))
+	fmt.Println("")
+
 	// Fetch terminal size, if not available, automatically
 	// set globalQuiet to true.
 	if w, e := pb.GetTerminalWidth(); e != nil {
