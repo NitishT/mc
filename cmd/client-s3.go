@@ -624,99 +624,83 @@ func (c *S3Client) Select(expression string, sse encrypt.ServerSide, selOpts Sel
 	return reader, nil
 }
 
-func (c *S3Client) watchOneBucket(bucket, prefix, suffix string, events []string, doneCh chan struct{}, eventChan chan EventInfo, errorChan chan *probe.Error) {
-	// Start listening on all bucket events.
-	eventsCh := c.api.ListenBucketNotification(bucket, prefix, suffix, events, doneCh)
-	for notificationInfo := range eventsCh {
-		if notificationInfo.Err != nil {
-			if nErr, ok := notificationInfo.Err.(minio.ErrorResponse); ok && nErr.Code == "APINotSupported" {
-				errorChan <- probe.NewError(APINotImplemented{
-					API:     "Watch",
-					APIType: c.targetURL.Scheme + "://" + c.targetURL.Host,
-				})
-				return
-			}
-			errorChan <- probe.NewError(notificationInfo.Err)
-		}
-
-		for _, record := range notificationInfo.Records {
-			bucketName := record.S3.Bucket.Name
-			key, e := url.QueryUnescape(record.S3.Object.Key)
-			if e != nil {
-				errorChan <- probe.NewError(e)
-				continue
-			}
-			u := *c.targetURL
-			u.Path = path.Join(string(u.Separator), bucketName, key)
-			if strings.HasPrefix(record.EventName, "s3:ObjectCreated:") {
-				if strings.HasPrefix(record.EventName, "s3:ObjectCreated:Copy") {
-					eventChan <- EventInfo{
-						Time:         record.EventTime,
-						Size:         record.S3.Object.Size,
-						UserMetadata: record.S3.Object.UserMetadata,
-						Path:         u.String(),
-						Type:         EventCreateCopy,
-						Host:         record.Source.Host,
-						Port:         record.Source.Port,
-						UserAgent:    record.Source.UserAgent,
-					}
-				} else if strings.HasPrefix(record.EventName, "s3:ObjectCreated:PutRetention") {
-					eventChan <- EventInfo{
-						Time:         record.EventTime,
-						Size:         record.S3.Object.Size,
-						UserMetadata: record.S3.Object.UserMetadata,
-						Path:         u.String(),
-						Type:         EventCreatePutRetention,
-						Host:         record.Source.Host,
-						Port:         record.Source.Port,
-						UserAgent:    record.Source.UserAgent,
-					}
-				} else {
-					eventChan <- EventInfo{
-						Time:         record.EventTime,
-						Size:         record.S3.Object.Size,
-						UserMetadata: record.S3.Object.UserMetadata,
-						Path:         u.String(),
-						Type:         EventCreate,
-						Host:         record.Source.Host,
-						Port:         record.Source.Port,
-						UserAgent:    record.Source.UserAgent,
-					}
-				}
-			} else if strings.HasPrefix(record.EventName, "s3:ObjectRemoved:") {
-				eventChan <- EventInfo{
-					Time:      record.EventTime,
-					Path:      u.String(),
-					Type:      EventRemove,
-					Host:      record.Source.Host,
-					Port:      record.Source.Port,
-					UserAgent: record.Source.UserAgent,
-				}
-			} else if record.EventName == minio.ObjectAccessedGet {
-				eventChan <- EventInfo{
+func (c *S3Client) notificationToEventsInfo(ninfo minio.NotificationInfo) []EventInfo {
+	var eventsInfo = make([]EventInfo, len(ninfo.Records))
+	for i, record := range ninfo.Records {
+		bucketName := record.S3.Bucket.Name
+		u := c.targetURL.Clone()
+		u.Path = path.Join(string(u.Separator), bucketName, record.S3.Object.Key)
+		if strings.HasPrefix(record.EventName, "s3:ObjectCreated:") {
+			if strings.HasPrefix(record.EventName, "s3:ObjectCreated:Copy") {
+				eventsInfo[i] = EventInfo{
 					Time:         record.EventTime,
 					Size:         record.S3.Object.Size,
 					UserMetadata: record.S3.Object.UserMetadata,
 					Path:         u.String(),
-					Type:         EventAccessedRead,
+					Type:         EventCreateCopy,
 					Host:         record.Source.Host,
 					Port:         record.Source.Port,
 					UserAgent:    record.Source.UserAgent,
 				}
-			} else if record.EventName == minio.ObjectAccessedHead {
-				eventChan <- EventInfo{
+			} else if strings.HasPrefix(record.EventName, "s3:ObjectCreated:PutRetention") {
+				eventsInfo[i] = EventInfo{
 					Time:         record.EventTime,
 					Size:         record.S3.Object.Size,
 					UserMetadata: record.S3.Object.UserMetadata,
 					Path:         u.String(),
-					Type:         EventAccessedStat,
+					Type:         EventCreatePutRetention,
 					Host:         record.Source.Host,
 					Port:         record.Source.Port,
 					UserAgent:    record.Source.UserAgent,
 				}
+			} else {
+				eventsInfo[i] = EventInfo{
+					Time:         record.EventTime,
+					Size:         record.S3.Object.Size,
+					UserMetadata: record.S3.Object.UserMetadata,
+					Path:         u.String(),
+					Type:         EventCreate,
+					Host:         record.Source.Host,
+					Port:         record.Source.Port,
+					UserAgent:    record.Source.UserAgent,
+				}
+			}
+		} else if strings.HasPrefix(record.EventName, "s3:ObjectRemoved:") {
+			eventsInfo[i] = EventInfo{
+				Time:         record.EventTime,
+				Size:         record.S3.Object.Size,
+				UserMetadata: record.S3.Object.UserMetadata,
+				Path:         u.String(),
+				Type:         EventRemove,
+				Host:         record.Source.Host,
+				Port:         record.Source.Port,
+				UserAgent:    record.Source.UserAgent,
+			}
+		} else if record.EventName == minio.ObjectAccessedGet {
+			eventsInfo[i] = EventInfo{
+				Time:         record.EventTime,
+				Size:         record.S3.Object.Size,
+				UserMetadata: record.S3.Object.UserMetadata,
+				Path:         u.String(),
+				Type:         EventAccessedRead,
+				Host:         record.Source.Host,
+				Port:         record.Source.Port,
+				UserAgent:    record.Source.UserAgent,
+			}
+		} else if record.EventName == minio.ObjectAccessedHead {
+			eventsInfo[i] = EventInfo{
+				Time:         record.EventTime,
+				Size:         record.S3.Object.Size,
+				UserMetadata: record.S3.Object.UserMetadata,
+				Path:         u.String(),
+				Type:         EventAccessedStat,
+				Host:         record.Source.Host,
+				Port:         record.Source.Port,
+				UserAgent:    record.Source.UserAgent,
 			}
 		}
 	}
+	return eventsInfo
 }
 
 // Watch - Start watching on all bucket events for a given account ID.
@@ -760,33 +744,40 @@ func (c *S3Client) Watch(params watchParams) (*WatchObject, *probe.Error) {
 	}
 
 	wo := &WatchObject{
-		eventInfoChan: make(chan EventInfo),
+		eventInfoChan: make(chan []EventInfo),
 		errorChan:     make(chan *probe.Error),
-		doneChan:      make(chan bool),
+		doneChan:      make(chan struct{}),
 	}
-
-	// A done channel for each bucket listening API call
-	doneChs := make([]chan struct{}, len(buckets))
-	for i := range doneChs {
-		doneChs[i] = make(chan struct{})
-	}
-
-	go func() {
-		// Stop all listening bucket API calls when
-		// receiving the main done call
-		<-wo.doneChan
-		for i := range doneChs {
-			close(doneChs[i])
-		}
-	}()
 
 	var wg sync.WaitGroup
-	for i, bucket := range buckets {
-		wg.Add(1)
-		go func(bucket string, doneCh chan struct{}) {
-			c.watchOneBucket(bucket, params.prefix, params.suffix, events, doneCh, wo.Events(), wo.Errors())
-			wg.Done()
-		}(bucket, doneChs[i])
+	wg.Add(len(buckets))
+	for _, bucket := range buckets {
+		bucket := bucket
+		go func() {
+			defer wg.Done()
+			// Start listening on all bucket events.
+			eventsCh := c.api.ListenBucketNotification(bucket, params.prefix, params.suffix, events, wo.doneChan)
+			for notificationInfo := range eventsCh {
+				if notificationInfo.Err != nil {
+					var perr *probe.Error
+					if nErr, ok := notificationInfo.Err.(minio.ErrorResponse); ok && nErr.Code == "APINotSupported" {
+						perr = probe.NewError(APINotImplemented{
+							API:     "Watch",
+							APIType: c.targetURL.Scheme + "://" + c.targetURL.Host,
+						})
+					} else {
+						perr = probe.NewError(notificationInfo.Err)
+					}
+					select {
+					case wo.Errors() <- perr:
+					}
+				} else {
+					select {
+					case wo.Events() <- c.notificationToEventsInfo(notificationInfo):
+					}
+				}
+			}
+		}()
 	}
 
 	go func() {
